@@ -6,7 +6,6 @@ import re
 
 # --- 1. FUNKCJA PARSUJĄCA ZAKRESY ---
 def parsuj_zakresy(tekst):
-    """Zamienia '17-20, 16N-18D' na listę ['17', '18', '19', '20', '16N', '17', '18D']"""
     wynik = []
     czesci = [c.strip().upper() for c in tekst.split(",") if c.strip()]
     
@@ -92,7 +91,7 @@ def generuj_grafik_macierz(rok, miesiac, pracownicy, awaryjny, limit_h, etat_h, 
         for p in pracownicy + [awaryjny]:
             if dz_str in procesowane_dane[p]["W"]: dzisiejsza_zmiana[p] = "W"
 
-        # RECEPCJA
+        # --- RECEPCJA ---
         if dz_str not in ania_urlopy and data.weekday() < 5 and data not in pl_holidays:
             grafik.at["Ania (Recepcja)", dz_str] = "R"; godziny["Ania (Recepcja)"] += 8
         elif dz_str in ilona_zastepstwa:
@@ -100,8 +99,8 @@ def generuj_grafik_macierz(rok, miesiac, pracownicy, awaryjny, limit_h, etat_h, 
                 grafik.at["Ilona (D)", dz_str] = "R"; godziny["Ilona"] += 8
                 dzisiejsza_zmiana["Ilona"] = "R"; historia_zmian["Ilona"]["R"] += 1
 
-        # DNIÓWKA (D)
-        kandydaci_d = [p for p in pracownicy if not sprawdz_blokade(p, dz_str, "D") and 
+        # --- DNIÓWKA (D) --- (Teraz Mateusz też w tym uczestniczy)
+        kandydaci_d = [p for p in pracownicy + [awaryjny] if not sprawdz_blokade(p, dz_str, "D") and 
                        grafik.at[f"{p} (D)", dz_str] == "" and wczorajsza_zmiana[p] != "N" and godziny[p] < limit_h]
         if dz_str in ilona_zastepstwa and "Ilona" in kandydaci_d: kandydaci_d.remove("Ilona")
         
@@ -110,54 +109,72 @@ def generuj_grafik_macierz(rok, miesiac, pracownicy, awaryjny, limit_h, etat_h, 
 
         if kandydaci_d:
             def waga_d(p):
-                score = godziny[p] - etat_h
-                if p == "Waldek": score += 10
-                if p == "Ilona" and jutro_str in ilona_zastepstwa: score -= 500
+                # Jeśli to awaryjny (Mateusz), ma limit "2 zmian" po których spada na sam koniec kolejki
+                if p == awaryjny:
+                    score = 0 if godziny[p] < 24 else 1000 
+                else:
+                    score = godziny[p] - etat_h
+                    if p == "Waldek": score += 10
+                    if p == "Ilona" and jutro_str in ilona_zastepstwa: score -= 500
+                
                 score += (historia_zmian[p]["D"] + historia_zmian[p]["R"] - historia_zmian[p]["N"]) * 5
                 
-                # --- PREFERENCJE DNIÓWEK ---
                 if dz_str in procesowane_dane[p]["P_D"]:
-                    score -= 200 # Silny magnes na tę zmianę
-                
+                    score -= 200 # Priorytet za życzenie
                 return score
+                
             kandydaci_d.sort(key=lambda p: (waga_d(p), historia_zmian[p]["D"]))
             wybrany_d = kandydaci_d[0]
             grafik.at[f"{wybrany_d} (D)", dz_str] = "D"; godziny[wybrany_d] += 12
             historia_zmian[wybrany_d]["D"] += 1; dzisiejsza_zmiana[wybrany_d] = "D"
 
-        # NOCKA (N)
+        # --- NOCKA (N) ---
         dzisiejszy_d = [p for p, zmiana in dzisiejsza_zmiana.items() if zmiana in ["D", "R", "W"]]
-        kandydaci_n = [p for p in pracownicy if not sprawdz_blokade(p, dz_str, "N") and 
-                       p not in dzisiejszy_d and grafik.at[f"{p} (N)", dz_str] == "" and godziny[p] < limit_h]
-        if jutro_str in ilona_zastepstwa and "Ilona" in kandydaci_n: kandydaci_n.remove("Ilona")
+        
+        kandydaci_n = []
+        for p in pracownicy + [awaryjny]:
+            if sprawdz_blokade(p, dz_str, "N"): continue
+            if grafik.at[f"{p} (N)", dz_str] != "": continue
+            if godziny[p] >= limit_h: continue
+            
+            # --- ZMIANA 24-GODZINNA ---
+            chce_24h = (dz_str in procesowane_dane[p]["P_D"]) and (dz_str in procesowane_dane[p]["P_N"])
+            if p in dzisiejszy_d and not chce_24h:
+                continue # Blokada normalna, chyba że pracownik wyraźnie zażyczył sobie 24h
+                
+            kandydaci_n.append(p)
+
+        if jutro_str in ilona_zastepstwa and "Ilona" in kandydaci_n: 
+            if "Ilona" in kandydaci_n: kandydaci_n.remove("Ilona")
         
         bezpieczni_n = [p for p in kandydaci_n if wczorajsza_zmiana[p] != "N"]
         if bezpieczni_n: kandydaci_n = bezpieczni_n
 
         if kandydaci_n:
             def waga_n(p):
-                score = godziny[p] - etat_h
-                if p == "Waldek": score += 10
+                if p == awaryjny:
+                    score = 0 if godziny[p] < 24 else 1000
+                else:
+                    score = godziny[p] - etat_h
+                    if p == "Waldek": score += 10
+                
                 score += (historia_zmian[p]["N"] - (historia_zmian[p]["D"] + historia_zmian[p]["R"])) * 5
                 
-                # --- PREFERENCJE NOCEK ---
                 if dz_str in procesowane_dane[p]["P_N"]:
-                    score -= 200 # Silny magnes na tę zmianę
-                
+                    score -= 200 # Priorytet za życzenie
                 return score
+                
             kandydaci_n.sort(key=lambda p: (waga_n(p), historia_zmian[p]["N"]))
             wybrany_n = kandydaci_n[0]
             grafik.at[f"{wybrany_n} (N)", dz_str] = "N"; godziny[wybrany_n] += 12
-            historia_zmian[wybrany_n]["N"] += 1; dzisiejsza_zmiana[wybrany_n] = "N"
-        else:
-            if not sprawdz_blokade(awaryjny, dz_str, "N") and dzisiejsza_zmiana[awaryjny] not in ["D", "R", "W"]:
-                grafik.at[f"{awaryjny} (N)", dz_str] = "N"; godziny[awaryjny] += 12; dzisiejsza_zmiana[awaryjny] = "N"
+            historia_zmian[wybrany_n]["N"] += 1
+            dzisiejsza_zmiana[wybrany_n] = "N" # Jeśli miał 24h, tu nadpisze "D" na "N" i jutro zablokuje dniówkę.
 
         wczorajsza_zmiana = dzisiejsza_zmiana.copy()
     return grafik, godziny, dni_daty, pl_holidays, procesowane_dane
 
 # --- 3. INTERFEJS ---
-st.set_page_config(page_title="Zbalansowany Grafik v6", layout="wide")
+st.set_page_config(page_title="Zbalansowany Grafik v7", layout="wide")
 
 pracownicy_lista = ["Ilona", "Waldek", "Krystian", "Kamil"]
 awaryjny_pracownik = "Mateusz"
@@ -170,26 +187,25 @@ with st.sidebar:
     max_h = st.number_input("Maksymalny limit (h)", value=192)
 
 st.header("📋 Dyspozycje i Życzenia")
-st.info("💡 Pola Dniówki / Nocki są 'miękkie' – system postara się je spełnić, o ile nie łamią zasad.")
+st.info("💡 **Zmiany 24-godzinne**: wpisz ten sam dzień np. '12' u danej osoby w polach *Pref. Dniówki* ORAZ *Pref. Nocki*.\n"
+        "💡 **Mateusz (Awaryjny)**: wejdzie do gry, gdy innym zaczną rosnąć nadgodziny, aby ściągnąć ok. 2 zmiany (24h).")
 
 dane_wejsciowe = {}
 cols = st.columns(3)
 wszyscy = ["Ania (Recepcja)"] + pracownicy_lista + [awaryjny_pracownik]
 
-# Generowanie okienek - dla każdego pracownika teraz są 4 pola
 for i, p in enumerate(wszyscy):
     with cols[i % 3]:
         st.subheader(p)
         w = st.text_input(f"Urlopy (W)", key=f"w_{p}", placeholder="np. 1, 5-8")
         x = st.text_input(f"Blokady (X)", key=f"x_{p}", placeholder="np. 10N-12D")
         
-        # Puste miejsca na życzenia dla Ani są ukrywane, bo ona pracuje tylko R
         if p == "Ania (Recepcja)":
             p_d = ""
             p_n = ""
         else:
             p_d = st.text_input(f"💛 Pref. Dniówki", key=f"pd_{p}", placeholder="np. 12, 14")
-            p_n = st.text_input(f"🌙 Pref. Nocki", key=f"pn_{p}", placeholder="np. 2, 5, 8")
+            p_n = st.text_input(f"🌙 Pref. Nocki", key=f"pn_{p}", placeholder="np. 12, 18") # 12 i 12 = zmiana 24h!
             
         dane_wejsciowe[p] = {"W": w, "X": x, "P_D": p_d, "P_N": p_n}
 
@@ -226,4 +242,10 @@ if st.button("🚀 Generuj Grafik"):
     c = st.columns(len(sumy))
     for i, (name, val) in enumerate(sumy.items()):
         delta = val - etat_h
-        c[i].metric(name, f"{val}h", delta=f"{delta}h", delta_color="inverse")
+        # Dla Mateusza liczymy deltę względem 24h, żeby widzieć jego "mini etat"
+        if name == awaryjny_pracownik:
+            delta = val - 24
+            c[i].metric(f"🛠️ {name}", f"{val}h", delta=f"{delta}h (od 24h)", delta_color="inverse")
+        else:
+            c[i].metric(name, f"{val}h", delta=f"{delta}h", delta_color="inverse")
+    
