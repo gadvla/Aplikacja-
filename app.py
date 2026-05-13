@@ -77,56 +77,54 @@ def generuj_grafik_macierz(rok, miesiac, pracownicy, awaryjny, limit_h, etat_h, 
 
         # DNIÓWKA (D)
         kandydaci_d = [p for p in pracownicy + [awaryjny] if not sprawdz_blokade(p, dz_str, "D") and 
-                       grafik.at[f"{p} (D)", dz_str] == "" and wczorajsza_zmiana[p] != "N" and godziny[p] < limit_h]
+                       grafik.at[f"{p} (D)", dz_str] == "" and wczorajsza_zmiana[p] != "N"]
         
-        if dz_str in ilona_zastepstwa and "Ilona" in kandydaci_d: kandydaci_d.remove("Ilona")
-        bezpieczni_d = [p for p in kandydaci_d if wczorajsza_zmiana[p] not in ["D", "R"]]
-        if bezpieczni_d: kandydaci_d = bezpieczni_d
+        # Filtr limitu godzin (Waldek ma 12h mniej)
+        kandydaci_d = [p for p in kandydaci_d if (p == "Waldek" and godziny[p] < limit_h - 12) or (p != "Waldek" and godziny[p] < limit_h)]
 
+        if dz_str in ilona_zastepstwa and "Ilona" in kandydaci_d: kandydaci_d.remove("Ilona")
+        
         if kandydaci_d:
             def waga_d(p):
-                # Waldek ma ogromną karę, chyba że sam prosił o zmianę
-                waldek_bonus = 5000 if p == "Waldek" and dz_str not in procesowane_dane["Waldek"]["P_D"] else 0
-                if p == awaryjny: score = 0 if godziny[p] < 24 else 1000
-                else: score = godziny[p] - etat_h
-                
-                if p == "Ilona" and jutro_str in ilona_zastepstwa: score -= 500
-                if dz_str in procesowane_dane[p]["P_D"]: score -= 1000 # Życzenie to priorytet
-                return score + waldek_bonus
-                
+                # Bonus za życzenie, kara za Waldka (żeby dawać innym)
+                score = godziny[p] - etat_h
+                if p == "Waldek": score += 50  # Waldek zawsze na końcu przy równych godzinach
+                if p == awaryjny: score = 0 if godziny[p] < 24 else 800
+                if dz_str in procesowane_dane[p]["P_D"]: score -= 300
+                return score
+            
             kandydaci_d.sort(key=lambda p: waga_d(p))
             wybrany_d = kandydaci_d[0]
             grafik.at[f"{wybrany_d} (D)", dz_str] = "D"; godziny[wybrany_d] += 12
             dzisiejsza_zmiana[wybrany_d] = "D"; historia_zmian[wybrany_d]["D"] += 1
 
         # NOCKA (N)
-        kandydaci_n = [p for p in pracownicy + [awaryjny] if not sprawdz_blokade(p, dz_str, "N") and 
-                       grafik.at[f"{p} (N)", dz_str] == "" and godziny[p] < limit_h]
+        # 1. Sprawdź czy ktoś ma "zaklepaną" nockę przez 24h
+        wybrany_n = None
+        for p in pracownicy + [awaryjny]:
+            if dzisiejsza_zmiana[p] == "D" and (dz_str in procesowane_dane[p]["P_D"]) and (dz_str in procesowane_dane[p]["P_N"]):
+                if not sprawdz_blokade(p, dz_str, "N"):
+                    wybrany_n = p
+                    break
         
-        # Logika 24h i blokowanie nocki dla innych jeśli ktoś ją "zaklepał" preferencją 24h
-        osoba_z_24h = None
-        for p in kandydaci_n:
-            if (dz_str in procesowane_dane[p]["P_D"]) and (dz_str in procesowane_dane[p]["P_N"]):
-                if dzisiejsza_zmiana[p] == "D": osoba_z_24h = p; break
+        # 2. Jeśli nikt nie zaklepał 24h, szukaj normalnie
+        if not wybrany_n:
+            kandydaci_n = [p for p in pracownicy + [awaryjny] if not sprawdz_blokade(p, dz_str, "N") and 
+                           dzisiejsza_zmiana[p] not in ["D", "R", "W"] and grafik.at[f"{p} (N)", dz_str] == ""]
+            
+            kandydaci_n = [p for p in kandydaci_n if (p == "Waldek" and godziny[p] < limit_h - 12) or (p != "Waldek" and godziny[p] < limit_h)]
 
-        if osoba_z_24h:
-            wybrany_n = osoba_z_24h
-        else:
-            kandydaci_n = [p for p in kandydaci_n if dzisiejsza_zmiana[p] not in ["D", "R", "W"]]
             if jutro_str in ilona_zastepstwa and "Ilona" in kandydaci_n: kandydaci_n.remove("Ilona")
-            bezpieczni_n = [p for p in kandydaci_n if wczorajsza_zmiana[p] != "N"]
-            if bezpieczni_n: kandydaci_n = bezpieczni_n
             
             if kandydaci_n:
                 def waga_n(p):
-                    waldek_bonus = 5000 if p == "Waldek" and dz_str not in procesowane_dane["Waldek"]["P_N"] else 0
-                    if p == awaryjny: score = 0 if godziny[p] < 24 else 1000
-                    else: score = godziny[p] - etat_h
-                    if dz_str in procesowane_dane[p]["P_N"]: score -= 1000
-                    return score + waldek_bonus
+                    score = godziny[p] - etat_h
+                    if p == "Waldek": score += 50
+                    if p == awaryjny: score = 0 if godziny[p] < 24 else 800
+                    if dz_str in procesowane_dane[p]["P_N"]: score -= 300
+                    return score
                 kandydaci_n.sort(key=lambda p: waga_n(p))
                 wybrany_n = kandydaci_n[0]
-            else: wybrany_n = None
 
         if wybrany_n:
             grafik.at[f"{wybrany_n} (N)", dz_str] = "N"; godziny[wybrany_n] += 12
@@ -136,7 +134,7 @@ def generuj_grafik_macierz(rok, miesiac, pracownicy, awaryjny, limit_h, etat_h, 
     return grafik, godziny, dni_daty, pl_holidays, procesowane_dane
 
 # --- 3. INTERFEJS ---
-st.set_page_config(page_title="Zbalansowany Grafik v8", layout="wide")
+st.set_page_config(page_title="Zbalansowany Grafik v9", layout="wide")
 pracownicy_lista = ["Ilona", "Waldek", "Krystian", "Kamil"]
 awaryjny_pracownik = "Mateusz"
 
@@ -145,10 +143,10 @@ with st.sidebar:
     wybrany_rok = st.number_input("Rok", value=2024)
     wybrany_miesiac = st.selectbox("Miesiąc", list(range(1, 13)), index=datetime.now().month - 1)
     etat_h = st.number_input("Etat (h)", value=160)
-    max_h = st.number_input("Limit (h)", value=192)
+    max_h = st.number_input("Maks. Limit (h)", value=192)
 
-st.header("📋 Grafik z Ochroną Waldka i Trybem 24h")
-st.warning("🛡️ Waldek jest teraz w trybie ochronnym: pracuje tylko w dni, które sam wskazał, lub gdy nie ma innej opcji.")
+st.header("📋 Grafik v9 (Stabilny)")
+st.info(f"💡 **Waldek**: System pilnuje, aby nie przekroczył {max_h - 12}h i daje mu zmiany w ostatniej kolejności.")
 
 dane_wejsciowe = {}
 cols = st.columns(3)
@@ -173,5 +171,5 @@ if st.button("🚀 Generuj Grafik"):
     c = st.columns(len(sumy))
     for i, (name, val) in enumerate(sumy.items()):
         delta = val - etat_h
-        c[i].metric(name, f"{val}h", delta=f"{delta}h", delta_color="inverse")
-                    
+        limit_info = f" (Limit: {max_h-12}h)" if name == "Waldek" else ""
+        c[i].metric(f"{name}{limit_info}", f"{val}h", delta=f"{delta}h", delta_color="inverse")
