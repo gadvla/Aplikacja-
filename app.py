@@ -8,21 +8,29 @@ import re
 def parsuj_zakresy(tekst):
     wynik = []
     czesci = [c.strip().upper() for c in tekst.split(",") if c.strip()]
+    
     for czesc in czesci:
         if "-" in czesc:
             try:
                 start_str, koniec_str = czesc.split("-")
                 start_m = re.match(r"(\d+)([DN]?)", start_str)
                 koniec_m = re.match(r"(\d+)([DN]?)", koniec_str)
+                
                 if start_m and koniec_m:
                     s_num, s_suf = int(start_m.group(1)), start_m.group(2)
                     k_num, k_suf = int(koniec_m.group(1)), koniec_m.group(2)
+                    
                     for n in range(s_num, k_num + 1):
-                        if n == s_num and s_suf: wynik.append(f"{n}{s_suf}")
-                        elif n == k_num and k_suf: wynik.append(f"{n}{k_suf}")
-                        else: wynik.append(str(n))
-            except: continue
-        else: wynik.append(czesc)
+                        if n == s_num and s_suf:
+                            wynik.append(f"{n}{s_suf}")
+                        elif n == k_num and k_suf:
+                            wynik.append(f"{n}{k_suf}")
+                        else:
+                            wynik.append(str(n))
+            except:
+                continue
+        else:
+            wynik.append(czesc)
     return wynik
 
 # --- 2. LOGIKA GENERUJĄCA GRAFIK ---
@@ -43,6 +51,7 @@ def generuj_grafik_macierz(rok, miesiac, pracownicy, awaryjny, limit_h, etat_h, 
     godziny = {p: 0 for p in ["Ania (Recepcja)"] + pracownicy + [awaryjny]}
     historia_zmian = {p: {"D": 0, "N": 0, "R": 0} for p in ["Ania (Recepcja)"] + pracownicy + [awaryjny]}
     wczorajsza_zmiana = {p: None for p in pracownicy + [awaryjny]}
+    
     pl_holidays = holidays.Poland(years=rok)
     
     procesowane_dane = {}
@@ -59,10 +68,11 @@ def generuj_grafik_macierz(rok, miesiac, pracownicy, awaryjny, limit_h, etat_h, 
                         if str(d_idx + 1) in ania_urlopy and data.weekday() < 5 and data not in pl_holidays]
 
     def sprawdz_blokade(p, dz_str, typ):
-        return dz_str in procesowane_dane[p]["W"] or dz_str in procesowane_dane[p]["X"] or \
-               (dz_str + typ) in procesowane_dane[p]["X"] or (dz_str + typ) in procesowane_dane[p]["W"]
+        x_list = procesowane_dane[p]["X"]
+        w_list = procesowane_dane[p]["W"]
+        return dz_str in w_list or dz_str in x_list or (dz_str + typ) in x_list or (dz_str + typ) in w_list
 
-    # Wstępne wpisanie urlopów (kolorowanie)
+    # Wpisywanie urlopów "W" (kolorowanie)
     for d_idx, data in enumerate(dni_daty):
         dz_str = str(d_idx + 1)
         for p in ["Ania (Recepcja)"] + pracownicy + [awaryjny]:
@@ -78,6 +88,9 @@ def generuj_grafik_macierz(rok, miesiac, pracownicy, awaryjny, limit_h, etat_h, 
         jutro_str = str(d_idx + 2)
         dzisiejsza_zmiana = {p: None for p in pracownicy + [awaryjny]}
         
+        for p in pracownicy + [awaryjny]:
+            if dz_str in procesowane_dane[p]["W"]: dzisiejsza_zmiana[p] = "W"
+
         # --- RECEPCJA ---
         if dz_str not in ania_urlopy and data.weekday() < 5 and data not in pl_holidays:
             grafik.at["Ania (Recepcja)", dz_str] = "R"; godziny["Ania (Recepcja)"] += 8
@@ -90,7 +103,7 @@ def generuj_grafik_macierz(rok, miesiac, pracownicy, awaryjny, limit_h, etat_h, 
         kandydaci_d = [p for p in pracownicy + [awaryjny] if not sprawdz_blokade(p, dz_str, "D") and 
                        grafik.at[f"{p} (D)", dz_str] == "" and wczorajsza_zmiana[p] != "N"]
         
-        # Limitowanie Waldka (-12h) i innych
+        # Limity (Waldek ma twardy limit o 12h mniejszy)
         kandydaci_d = [p for p in kandydaci_d if (p == "Waldek" and godziny[p] < limit_h - 12) or (p != "Waldek" and godziny[p] < limit_h)]
 
         if dz_str in ilona_zastepstwa and "Ilona" in kandydaci_d: kandydaci_d.remove("Ilona")
@@ -100,19 +113,31 @@ def generuj_grafik_macierz(rok, miesiac, pracownicy, awaryjny, limit_h, etat_h, 
 
         if kandydaci_d:
             def waga_d(p):
-                score = godziny[p] - etat_h
-                if p == "Waldek": score += 100 # Duża kara, by wybierać Waldka na końcu
-                if p == awaryjny: score = 0 if godziny[p] < 24 else 800
-                if dz_str in procesowane_dane[p]["P_D"]: score -= 300 # Życzenie zbija wagę (priorytet)
+                if p == awaryjny:
+                    # Mateusz wchodzi dopiero, gdy inni mają etat albo nie ma chętnych
+                    score = 500 if godziny[p] < 24 else 2000
+                else:
+                    score = godziny[p] - etat_h
+                    if p == "Waldek":
+                        if godziny[p] < etat_h:
+                            score += 5 # Zapewnia wyrobienie etatu (lekki minus wobec równych mu kolegów)
+                        else:
+                            score += 150 # Potężna kara po wyrobieniu etatu - blokuje nadgodziny
+                    
+                score += (historia_zmian[p]["D"] + historia_zmian[p]["R"] - historia_zmian[p]["N"]) * 5
+                
+                # Życzenie to priorytet
+                if dz_str in procesowane_dane[p]["P_D"]:
+                    score -= 300 
                 return score
                 
-            kandydaci_d.sort(key=lambda p: waga_d(p))
+            kandydaci_d.sort(key=lambda p: (waga_d(p), historia_zmian[p]["D"]))
             wybrany_d = kandydaci_d[0]
             grafik.at[f"{wybrany_d} (D)", dz_str] = "D"; godziny[wybrany_d] += 12
-            dzisiejsza_zmiana[wybrany_d] = "D"
+            historia_zmian[wybrany_d]["D"] += 1; dzisiejsza_zmiana[wybrany_d] = "D"
 
         # --- NOCKA (N) ---
-        # 1. Priorytet dla osób, które chcą 24h (nierozerwalne)
+        # 1. Mechanizm 24h na życzenie (Nierozerwalność)
         wybrany_n = None
         for p in pracownicy + [awaryjny]:
             if dzisiejsza_zmiana[p] == "D" and (dz_str in procesowane_dane[p]["P_D"]) and (dz_str in procesowane_dane[p]["P_N"]):
@@ -120,45 +145,65 @@ def generuj_grafik_macierz(rok, miesiac, pracownicy, awaryjny, limit_h, etat_h, 
                     wybrany_n = p
                     break
         
-        # 2. Jeśli nikt nie zaklepał 24h, szukaj normalnie
+        # 2. Jeśli brak chętnego na 24h, szukamy standardowo
         if not wybrany_n:
+            dzisiejszy_d = [p for p, zmiana in dzisiejsza_zmiana.items() if zmiana in ["D", "R", "W"]]
+            
             kandydaci_n = [p for p in pracownicy + [awaryjny] if not sprawdz_blokade(p, dz_str, "N") and 
                            dzisiejsza_zmiana[p] not in ["D", "R", "W"] and grafik.at[f"{p} (N)", dz_str] == ""]
             
             kandydaci_n = [p for p in kandydaci_n if (p == "Waldek" and godziny[p] < limit_h - 12) or (p != "Waldek" and godziny[p] < limit_h)]
 
+            if jutro_str in ilona_zastepstwa and "Ilona" in kandydaci_n: kandydaci_n.remove("Ilona")
+            
+            bezpieczni_n = [p for p in kandydaci_n if wczorajsza_zmiana[p] != "N"]
+            if bezpieczni_n: kandydaci_n = bezpieczni_n
+
             if kandydaci_n:
                 def waga_n(p):
-                    score = godziny[p] - etat_h
-                    if p == "Waldek": score += 100
-                    if p == awaryjny: score = 0 if godziny[p] < 24 else 800
-                    if dz_str in procesowane_dane[p]["P_N"]: score -= 300
+                    if p == awaryjny:
+                        score = 500 if godziny[p] < 24 else 2000
+                    else:
+                        score = godziny[p] - etat_h
+                        if p == "Waldek":
+                            if godziny[p] < etat_h:
+                                score += 5 
+                            else:
+                                score += 150 
+                    
+                    score += (historia_zmian[p]["N"] - (historia_zmian[p]["D"] + historia_zmian[p]["R"])) * 5
+                    
+                    if dz_str in procesowane_dane[p]["P_N"]:
+                        score -= 300 
                     return score
-                kandydaci_n.sort(key=lambda p: waga_n(p))
+                    
+                kandydaci_n.sort(key=lambda p: (waga_n(p), historia_zmian[p]["N"]))
                 wybrany_n = kandydaci_n[0]
 
         if wybrany_n:
             grafik.at[f"{wybrany_n} (N)", dz_str] = "N"; godziny[wybrany_n] += 12
-            dzisiejsza_zmiana[wybrany_n] = "N"
+            historia_zmian[wybrany_n]["N"] += 1
+            dzisiejsza_zmiana[wybrany_n] = "N" 
 
         wczorajsza_zmiana = dzisiejsza_zmiana.copy()
     return grafik, godziny, dni_daty, pl_holidays, procesowane_dane
 
-# --- 3. INTERFEJS I STYLIZACJA ---
-st.set_page_config(page_title="Grafik v10", layout="wide")
+# --- 3. INTERFEJS ---
+st.set_page_config(page_title="Zbalansowany Grafik v11", layout="wide")
+
+pracownicy_lista = ["Ilona", "Waldek", "Krystian", "Kamil"]
+awaryjny_pracownik = "Mateusz"
 
 with st.sidebar:
     st.header("⚙️ Ustawienia")
     wybrany_rok = st.number_input("Rok", value=2024)
     wybrany_miesiac = st.selectbox("Miesiąc", list(range(1, 13)), index=datetime.now().month - 1)
-    etat_h = st.number_input("Etat (h)", value=160)
-    max_h = st.number_input("Maks. Limit (h)", value=192)
+    etat_h = st.number_input("Etat w tym miesiącu (h)", value=160)
+    max_h = st.number_input("Maksymalny limit (h)", value=192)
 
-st.header("📋 Grafik z ochroną Waldka i blokadą 24h")
-st.info(f"💡 **Oszczędzanie Waldka**: Jego limit to obecnie {max_h - 12}h. Inni pracownicy są brani w pierwszej kolejności.")
+st.header("📋 Grafik v11 (Priorytet Etatu i Ochrona 24h)")
+st.info(f"💡 **Waldek**: System ZAWSZE dociągnie go do etatu ({etat_h}h). Dopiero potem go zablokuje, żeby koledzy mogli robić nadgodziny do limitu ({max_h}h).")
 
-pracownicy_lista = ["Ilona", "Waldek", "Krystian", "Kamil"]
-awaryjny_pracownik = "Mateusz"
 dane_wejsciowe = {}
 cols = st.columns(3)
 wszyscy = ["Ania (Recepcja)"] + pracownicy_lista + [awaryjny_pracownik]
@@ -166,12 +211,16 @@ wszyscy = ["Ania (Recepcja)"] + pracownicy_lista + [awaryjny_pracownik]
 for i, p in enumerate(wszyscy):
     with cols[i % 3]:
         st.subheader(p)
-        w = st.text_input(f"Urlopy (W)", key=f"w_{p}")
-        x = st.text_input(f"Blokady (X)", key=f"x_{p}")
-        if p != "Ania (Recepcja)":
-            p_d = st.text_input(f"💛 Pref. Dniówki", key=f"pd_{p}")
-            p_n = st.text_input(f"🌙 Pref. Nocki", key=f"pn_{p}")
-        else: p_d, p_n = "", ""
+        w = st.text_input(f"Urlopy (W)", key=f"w_{p}", placeholder="np. 1, 5-8")
+        x = st.text_input(f"Blokady (X)", key=f"x_{p}", placeholder="np. 10N-12D")
+        
+        if p == "Ania (Recepcja)":
+            p_d = ""
+            p_n = ""
+        else:
+            p_d = st.text_input(f"💛 Pref. Dniówki", key=f"pd_{p}", placeholder="np. 12, 14")
+            p_n = st.text_input(f"🌙 Pref. Nocki", key=f"pn_{p}", placeholder="np. 12, 18")
+            
         dane_wejsciowe[p] = {"W": w, "X": x, "P_D": p_d, "P_N": p_n}
 
 if st.button("🚀 Generuj Grafik"):
@@ -183,21 +232,22 @@ if st.button("🚀 Generuj Grafik"):
         styles = []
         for row_label, val in col.items():
             style = ""
+            dz_str = col.name
             p_name = "Ania (Recepcja)" if row_label == "Ania (Recepcja)" else row_label.split(" (")[0]
             typ_zmiany = "D" if "(D)" in row_label else ("N" if "(N)" in row_label else "R")
             
-            # Weekendy i święta
+            # Kolory weekendów
             if data.weekday() == 5: style = "background-color: #9ff572; color: black;"
             elif data.weekday() == 6 or data in swieta: style = "background-color: #f5dc72; color: black;"
             
-            # Zastępstwo Ilony
+            # Zastępstwa
             if row_label == "Ilona (D)" and val == "R":
                 style = "background-color: #ffff00; color: black; font-weight: bold; border: 2px solid black;"
 
-            # Urlopy i Blokady
-            if col.name in debug_dane[p_name]["W"] or (col.name + typ_zmiany) in debug_dane[p_name]["W"]:
+            # Kolory Blokad / Urlopów
+            if dz_str in debug_dane[p_name]["W"] or (dz_str + typ_zmiany) in debug_dane[p_name]["W"]:
                 style = "background-color: #d1c4e9; color: #4527a0; font-weight: bold;"
-            elif col.name in debug_dane[p_name]["X"] or (col.name + typ_zmiany) in debug_dane[p_name]["X"]:
+            elif dz_str in debug_dane[p_name]["X"] or (dz_str + typ_zmiany) in debug_dane[p_name]["X"]:
                 style = "background-color: #d1c4e9; color: #d1c4e9;"
             
             styles.append(style)
@@ -205,9 +255,15 @@ if st.button("🚀 Generuj Grafik"):
 
     st.dataframe(df.style.apply(style_grafik, axis=0), use_container_width=True, height=550)
     
-    st.write("### ⚖️ Podsumowanie")
+    st.write(f"### ⚖️ Podsumowanie (Etat: {etat_h}h)")
     c = st.columns(len(sumy))
     for i, (name, val) in enumerate(sumy.items()):
         delta = val - etat_h
-        limit_txt = f"(Limit {max_h-12}h)" if name == "Waldek" else ""
-        c[i].metric(f"{name} {limit_txt}", f"{val}h", delta=f"{delta}h", delta_color="inverse")
+        limit_info = f" (Limit: {max_h-12}h)" if name == "Waldek" else ""
+        
+        if name == awaryjny_pracownik:
+            delta = val - 24
+            c[i].metric(f"🛠️ {name}", f"{val}h", delta=f"{delta}h (od 24h)", delta_color="inverse")
+        else:
+            c[i].metric(f"{name}{limit_info}", f"{val}h", delta=f"{delta}h", delta_color="inverse")
+            
