@@ -14,7 +14,6 @@ def parsuj_zakresy(tekst):
         if "-" in czesc:
             try:
                 start_str, koniec_str = czesc.split("-")
-                # Wyciągamy same liczby i ewentualne litery (D/N)
                 start_m = re.match(r"(\d+)([DN]?)", start_str)
                 koniec_m = re.match(r"(\d+)([DN]?)", koniec_str)
                 
@@ -23,14 +22,14 @@ def parsuj_zakresy(tekst):
                     k_num, k_suf = int(koniec_m.group(1)), koniec_m.group(2)
                     
                     for n in range(s_num, k_num + 1):
-                        if n == s_num and s_suf: # Pierwszy dzień zakresu
+                        if n == s_num and s_suf:
                             wynik.append(f"{n}{s_suf}")
-                        elif n == k_num and k_suf: # Ostatni dzień zakresu
+                        elif n == k_num and k_suf:
                             wynik.append(f"{n}{k_suf}")
-                        else: # Dni w środku zakresu - pełna niedostępność
+                        else:
                             wynik.append(str(n))
             except:
-                continue # Jeśli ktoś wpisze głupoty, pomijamy
+                continue
         else:
             wynik.append(czesc)
     return wynik
@@ -56,12 +55,14 @@ def generuj_grafik_macierz(rok, miesiac, pracownicy, awaryjny, limit_h, etat_h, 
     
     pl_holidays = holidays.Poland(years=rok)
     
-    # Procesowanie urlopów i blokad (używamy parsera!)
+    # Procesowanie urlopów, blokad i PREFERENCJI
     procesowane_dane = {}
     for p in ["Ania (Recepcja)"] + pracownicy + [awaryjny]:
         procesowane_dane[p] = {
             "W": parsuj_zakresy(dane_wejsciowe[p]["W"]),
-            "X": parsuj_zakresy(dane_wejsciowe[p]["X"])
+            "X": parsuj_zakresy(dane_wejsciowe[p]["X"]),
+            "P_D": parsuj_zakresy(dane_wejsciowe[p]["P_D"]),
+            "P_N": parsuj_zakresy(dane_wejsciowe[p]["P_N"])
         }
 
     ania_urlopy = procesowane_dane["Ania (Recepcja)"]["W"]
@@ -71,10 +72,8 @@ def generuj_grafik_macierz(rok, miesiac, pracownicy, awaryjny, limit_h, etat_h, 
     def sprawdz_blokade(p, dz_str, typ):
         x_list = procesowane_dane[p]["X"]
         w_list = procesowane_dane[p]["W"]
-        # Blokada jeśli: dzień jest na liście (cały dzień) LUB dzień+typ (np. 16N)
         return dz_str in w_list or dz_str in x_list or (dz_str + typ) in x_list or (dz_str + typ) in w_list
 
-    # Wstępne urlopy
     for d_idx, data in enumerate(dni_daty):
         dz_str = str(d_idx + 1)
         for p in ["Ania (Recepcja)"] + pracownicy + [awaryjny]:
@@ -85,7 +84,6 @@ def generuj_grafik_macierz(rok, miesiac, pracownicy, awaryjny, limit_h, etat_h, 
                     grafik.at[f"{p} (D)", dz_str] = "W"
                     grafik.at[f"{p} (N)", dz_str] = "W"; godziny[p] += 12
 
-    # Pętla generowania
     for d_idx, data in enumerate(dni_daty):
         dz_str = str(d_idx + 1)
         jutro_str = str(d_idx + 2)
@@ -116,6 +114,11 @@ def generuj_grafik_macierz(rok, miesiac, pracownicy, awaryjny, limit_h, etat_h, 
                 if p == "Waldek": score += 10
                 if p == "Ilona" and jutro_str in ilona_zastepstwa: score -= 500
                 score += (historia_zmian[p]["D"] + historia_zmian[p]["R"] - historia_zmian[p]["N"]) * 5
+                
+                # --- PREFERENCJE DNIÓWEK ---
+                if dz_str in procesowane_dane[p]["P_D"]:
+                    score -= 200 # Silny magnes na tę zmianę
+                
                 return score
             kandydaci_d.sort(key=lambda p: (waga_d(p), historia_zmian[p]["D"]))
             wybrany_d = kandydaci_d[0]
@@ -136,6 +139,11 @@ def generuj_grafik_macierz(rok, miesiac, pracownicy, awaryjny, limit_h, etat_h, 
                 score = godziny[p] - etat_h
                 if p == "Waldek": score += 10
                 score += (historia_zmian[p]["N"] - (historia_zmian[p]["D"] + historia_zmian[p]["R"])) * 5
+                
+                # --- PREFERENCJE NOCEK ---
+                if dz_str in procesowane_dane[p]["P_N"]:
+                    score -= 200 # Silny magnes na tę zmianę
+                
                 return score
             kandydaci_n.sort(key=lambda p: (waga_n(p), historia_zmian[p]["N"]))
             wybrany_n = kandydaci_n[0]
@@ -149,7 +157,7 @@ def generuj_grafik_macierz(rok, miesiac, pracownicy, awaryjny, limit_h, etat_h, 
     return grafik, godziny, dni_daty, pl_holidays, procesowane_dane
 
 # --- 3. INTERFEJS ---
-st.set_page_config(page_title="Zbalansowany Grafik v5", layout="wide")
+st.set_page_config(page_title="Zbalansowany Grafik v6", layout="wide")
 
 pracownicy_lista = ["Ilona", "Waldek", "Krystian", "Kamil"]
 awaryjny_pracownik = "Mateusz"
@@ -161,19 +169,29 @@ with st.sidebar:
     etat_h = st.number_input("Etat w tym miesiącu (h)", value=160)
     max_h = st.number_input("Maksymalny limit (h)", value=192)
 
-st.header("📋 Dyspozycje")
-st.info("💡 Możesz wpisywać zakresy, np.: **10-15** (całe dni), **16N-18D** (od nocki 16-go do dniówki 18-go).")
+st.header("📋 Dyspozycje i Życzenia")
+st.info("💡 Pola Dniówki / Nocki są 'miękkie' – system postara się je spełnić, o ile nie łamią zasad.")
 
 dane_wejsciowe = {}
 cols = st.columns(3)
 wszyscy = ["Ania (Recepcja)"] + pracownicy_lista + [awaryjny_pracownik]
 
+# Generowanie okienek - dla każdego pracownika teraz są 4 pola
 for i, p in enumerate(wszyscy):
     with cols[i % 3]:
         st.subheader(p)
-        w = st.text_input(f"Urlopy (W) - {p}", key=f"w_{p}", placeholder="np. 1, 5-8")
-        x = st.text_input(f"Blokady (X) - {p}", key=f"x_{p}", placeholder="np. 10N-12D")
-        dane_wejsciowe[p] = {"W": w, "X": x}
+        w = st.text_input(f"Urlopy (W)", key=f"w_{p}", placeholder="np. 1, 5-8")
+        x = st.text_input(f"Blokady (X)", key=f"x_{p}", placeholder="np. 10N-12D")
+        
+        # Puste miejsca na życzenia dla Ani są ukrywane, bo ona pracuje tylko R
+        if p == "Ania (Recepcja)":
+            p_d = ""
+            p_n = ""
+        else:
+            p_d = st.text_input(f"💛 Pref. Dniówki", key=f"pd_{p}", placeholder="np. 12, 14")
+            p_n = st.text_input(f"🌙 Pref. Nocki", key=f"pn_{p}", placeholder="np. 2, 5, 8")
+            
+        dane_wejsciowe[p] = {"W": w, "X": x, "P_D": p_d, "P_N": p_n}
 
 if st.button("🚀 Generuj Grafik"):
     df, sumy, daty, swieta, debug_dane = generuj_grafik_macierz(wybrany_rok, wybrany_miesiac, pracownicy_lista, awaryjny_pracownik, max_h, etat_h, dane_wejsciowe)
@@ -194,7 +212,6 @@ if st.button("🚀 Generuj Grafik"):
             if row_label == "Ilona (D)" and val == "R":
                 style = "background-color: #ffff00; color: black; font-weight: bold; border: 2px solid black;"
 
-            # Kolorowanie urlopów/blokad z debug_dane (używając sparsowanych list)
             if dz_str in debug_dane[p_name]["W"] or (dz_str + typ_zmiany) in debug_dane[p_name]["W"]:
                 style = "background-color: #d1c4e9; color: #4527a0; font-weight: bold;"
             elif dz_str in debug_dane[p_name]["X"] or (dz_str + typ_zmiany) in debug_dane[p_name]["X"]:
