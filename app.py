@@ -72,7 +72,6 @@ def generuj_grafik_macierz(rok, miesiac, pracownicy, awaryjny, limit_h, etat_h, 
         w_list = procesowane_dane[p]["W"]
         return dz_str in w_list or dz_str in x_list or (dz_str + typ) in x_list or (dz_str + typ) in w_list
 
-    # Wpisywanie urlopów "W" (kolorowanie)
     for d_idx, data in enumerate(dni_daty):
         dz_str = str(d_idx + 1)
         for p in ["Ania (Recepcja)"] + pracownicy + [awaryjny]:
@@ -103,7 +102,6 @@ def generuj_grafik_macierz(rok, miesiac, pracownicy, awaryjny, limit_h, etat_h, 
         kandydaci_d = [p for p in pracownicy + [awaryjny] if not sprawdz_blokade(p, dz_str, "D") and 
                        grafik.at[f"{p} (D)", dz_str] == "" and wczorajsza_zmiana[p] != "N"]
         
-        # Limity (Waldek ma twardy limit o 12h mniejszy)
         kandydaci_d = [p for p in kandydaci_d if (p == "Waldek" and godziny[p] < limit_h - 12) or (p != "Waldek" and godziny[p] < limit_h)]
 
         if dz_str in ilona_zastepstwa and "Ilona" in kandydaci_d: kandydaci_d.remove("Ilona")
@@ -113,22 +111,25 @@ def generuj_grafik_macierz(rok, miesiac, pracownicy, awaryjny, limit_h, etat_h, 
 
         if kandydaci_d:
             def waga_d(p):
+                score = godziny[p] - etat_h
+                
+                # Baza dla awaryjnego i nadgodzin Waldka
                 if p == awaryjny:
-                    # Mateusz wchodzi dopiero, gdy inni mają etat albo nie ma chętnych
-                    score = 500 if godziny[p] < 24 else 2000
-                else:
-                    score = godziny[p] - etat_h
-                    if p == "Waldek":
-                        if godziny[p] < etat_h:
-                            score += 5 # Zapewnia wyrobienie etatu (lekki minus wobec równych mu kolegów)
-                        else:
-                            score += 150 # Potężna kara po wyrobieniu etatu - blokuje nadgodziny
+                    score += 2000 if godziny[p] < 24 else 5000
+                elif p == "Waldek" and godziny[p] >= etat_h:
+                    score += 500
                     
                 score += (historia_zmian[p]["D"] + historia_zmian[p]["R"] - historia_zmian[p]["N"]) * 5
                 
-                # Życzenie to priorytet
-                if dz_str in procesowane_dane[p]["P_D"]:
-                    score -= 300 
+                # ŻELAZNE PREFERENCJE
+                chce_d = dz_str in procesowane_dane[p]["P_D"]
+                chce_n = dz_str in procesowane_dane[p]["P_N"]
+                
+                if chce_d and chce_n:
+                    score -= 50000  # Absolutny priorytet, wygrywa Dniówkę z każdym!
+                elif chce_d:
+                    score -= 10000  # Gwarancja zwykłej zmiany D
+                    
                 return score
                 
             kandydaci_d.sort(key=lambda p: (waga_d(p), historia_zmian[p]["D"]))
@@ -137,18 +138,19 @@ def generuj_grafik_macierz(rok, miesiac, pracownicy, awaryjny, limit_h, etat_h, 
             historia_zmian[wybrany_d]["D"] += 1; dzisiejsza_zmiana[wybrany_d] = "D"
 
         # --- NOCKA (N) ---
-        # 1. Mechanizm 24h na życzenie (Nierozerwalność)
         wybrany_n = None
-        for p in pracownicy + [awaryjny]:
-            if dzisiejsza_zmiana[p] == "D" and (dz_str in procesowane_dane[p]["P_D"]) and (dz_str in procesowane_dane[p]["P_N"]):
-                if not sprawdz_blokade(p, dz_str, "N"):
-                    wybrany_n = p
-                    break
         
-        # 2. Jeśli brak chętnego na 24h, szukamy standardowo
+        # 1. Zabezpieczenie nierozerwalności 24h (Z Urzędu)
+        osoba_na_d = [p for p, zmiana in dzisiejsza_zmiana.items() if zmiana == "D"]
+        if osoba_na_d:
+            p_d = osoba_na_d[0]
+            # Sprawdzamy czy ta osoba prosiła o Nockę tego samego dnia (czyli prosiła o 24h)
+            if dz_str in procesowane_dane[p_d]["P_N"] and dz_str in procesowane_dane[p_d]["P_D"]:
+                if not sprawdz_blokade(p_d, dz_str, "N"):
+                    wybrany_n = p_d
+        
+        # 2. Szukanie standardowe (jeśli nikt nie wymusił 24h)
         if not wybrany_n:
-            dzisiejszy_d = [p for p, zmiana in dzisiejsza_zmiana.items() if zmiana in ["D", "R", "W"]]
-            
             kandydaci_n = [p for p in pracownicy + [awaryjny] if not sprawdz_blokade(p, dz_str, "N") and 
                            dzisiejsza_zmiana[p] not in ["D", "R", "W"] and grafik.at[f"{p} (N)", dz_str] == ""]
             
@@ -161,20 +163,19 @@ def generuj_grafik_macierz(rok, miesiac, pracownicy, awaryjny, limit_h, etat_h, 
 
             if kandydaci_n:
                 def waga_n(p):
+                    score = godziny[p] - etat_h
+                    
                     if p == awaryjny:
-                        score = 500 if godziny[p] < 24 else 2000
-                    else:
-                        score = godziny[p] - etat_h
-                        if p == "Waldek":
-                            if godziny[p] < etat_h:
-                                score += 5 
-                            else:
-                                score += 150 
+                        score += 2000 if godziny[p] < 24 else 5000
+                    elif p == "Waldek" and godziny[p] >= etat_h:
+                        score += 500 
                     
                     score += (historia_zmian[p]["N"] - (historia_zmian[p]["D"] + historia_zmian[p]["R"])) * 5
                     
+                    # ŻELAZNE PREFERENCJE
                     if dz_str in procesowane_dane[p]["P_N"]:
-                        score -= 300 
+                        score -= 10000  # Gwarancja zwykłej zmiany N
+                        
                     return score
                     
                 kandydaci_n.sort(key=lambda p: (waga_n(p), historia_zmian[p]["N"]))
@@ -189,7 +190,7 @@ def generuj_grafik_macierz(rok, miesiac, pracownicy, awaryjny, limit_h, etat_h, 
     return grafik, godziny, dni_daty, pl_holidays, procesowane_dane
 
 # --- 3. INTERFEJS ---
-st.set_page_config(page_title="Zbalansowany Grafik v11", layout="wide")
+st.set_page_config(page_title="Zbalansowany Grafik v12", layout="wide")
 
 pracownicy_lista = ["Ilona", "Waldek", "Krystian", "Kamil"]
 awaryjny_pracownik = "Mateusz"
@@ -201,8 +202,8 @@ with st.sidebar:
     etat_h = st.number_input("Etat w tym miesiącu (h)", value=160)
     max_h = st.number_input("Maksymalny limit (h)", value=192)
 
-st.header("📋 Grafik v11 (Priorytet Etatu i Ochrona 24h)")
-st.info(f"💡 **Waldek**: System ZAWSZE dociągnie go do etatu ({etat_h}h). Dopiero potem go zablokuje, żeby koledzy mogli robić nadgodziny do limitu ({max_h}h).")
+st.header("📋 Grafik v12 (Żelazne Preferencje i Bloki 24h)")
+st.info("💡 **Twarde zasady**: Jeśli wpiszesz komuś ten sam dzień w D i N, nie ma siły, która to rozerwie. Zwykłe preferencje też wchodzą praktycznie ze 100% pewnością.")
 
 dane_wejsciowe = {}
 cols = st.columns(3)
